@@ -1,5 +1,5 @@
-Asynchronous and non-Blocking
------------------------------
+Asynchronous and non-Blocking I/O
+---------------------------------
 
 Real-time web features require a long-lived mostly-idle connection per
 user.  In a traditional synchronous web server, this implies devoting
@@ -60,7 +60,9 @@ things asynchronous).
 Examples
 ~~~~~~~~
 
-Here is a sample synchronous function::
+Here is a sample synchronous function:
+
+.. testcode::
 
     from tornado.httpclient import HTTPClient
 
@@ -69,8 +71,13 @@ Here is a sample synchronous function::
         response = http_client.fetch(url)
         return response.body
 
+.. testoutput::
+   :hide:
+
 And here is the same function rewritten to be asynchronous with a
-callback argument::
+callback argument:
+
+.. testcode::
 
     from tornado.httpclient import AsyncHTTPClient
 
@@ -78,9 +85,14 @@ callback argument::
         http_client = AsyncHTTPClient()
         def handle_response(response):
             callback(response.body)
-        http_client.fetch(url)
+        http_client.fetch(url, callback=handle_response)
 
-And again with a `.Future` instead of a callback::
+.. testoutput::
+   :hide:
+
+And again with a `.Future` instead of a callback:
+
+.. testcode::
 
     from tornado.concurrent import Future
 
@@ -92,6 +104,9 @@ And again with a `.Future` instead of a callback::
             lambda f: my_future.set_result(f.result()))
         return my_future
 
+.. testoutput::
+   :hide:
+
 The raw `.Future` version is more complex, but ``Futures`` are
 nonetheless recommended practice in Tornado because they have two
 major advantages.  Error handling is more consistent since the
@@ -100,7 +115,9 @@ the ad-hoc error handling common in callback-oriented interfaces), and
 ``Futures`` lend themselves well to use with coroutines.  Coroutines
 will be discussed in depth in the next section of this guide.  Here is
 the coroutine version of our sample function, which is very similar to
-the original synchronous version::
+the original synchronous version:
+
+.. testcode::
 
     from tornado import gen
 
@@ -108,4 +125,14 @@ the original synchronous version::
     def fetch_coroutine(url):
         http_client = AsyncHTTPClient()
         response = yield http_client.fetch(url)
-        return response.body
+        raise gen.Return(response.body)
+
+.. testoutput::
+   :hide:
+
+The statement ``raise gen.Return(response.body)`` is an artifact of
+Python 2, in which generators aren't allowed to return
+values. To overcome this, Tornado coroutines raise a special kind of
+exception called a `.Return`. The coroutine catches this exception and
+treats it like a returned value. In Python 3.3 and later, a ``return
+response.body`` achieves the same result.

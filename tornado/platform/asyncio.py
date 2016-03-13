@@ -1,21 +1,31 @@
 """Bridges between the `asyncio` module and Tornado IOLoop.
 
-This is a work in progress and interfaces are subject to change.
+.. versionadded:: 3.2
 
-To test:
-python3.4 -m tornado.test.runtests --ioloop=tornado.platform.asyncio.AsyncIOLoop
-python3.4 -m tornado.test.runtests --ioloop=tornado.platform.asyncio.AsyncIOMainLoop
-(the tests log a few warnings with AsyncIOMainLoop because they leave some
-unfinished callbacks on the event loop that fail when it resumes)
+This module integrates Tornado with the ``asyncio`` module introduced
+in Python 3.4 (and available `as a separate download
+<https://pypi.python.org/pypi/asyncio>`_ for Python 3.3).  This makes
+it possible to combine the two libraries on the same event loop.
+
+Most applications should use `AsyncIOMainLoop` to run Tornado on the
+default ``asyncio`` event loop.  Applications that need to run event
+loops on multiple threads may use `AsyncIOLoop` to create multiple
+loops.
+
+.. note::
+
+   Tornado requires the `~asyncio.BaseEventLoop.add_reader` family of methods,
+   so it is not compatible with the `~asyncio.ProactorEventLoop` on Windows.
+   Use the `~asyncio.SelectorEventLoop` instead.
 """
 
 from __future__ import absolute_import, division, print_function, with_statement
-import datetime
 import functools
 
+import tornado.concurrent
+from tornado.gen import convert_yielded
 from tornado.ioloop import IOLoop
 from tornado import stack_context
-from tornado.util import timedelta_to_seconds
 
 try:
     # Import the real asyncio module for py33+ first.  Older versions of the
@@ -29,11 +39,12 @@ except ImportError as e:
         # Re-raise the original asyncio error, not the trollius one.
         raise e
 
+
 class BaseAsyncIOLoop(IOLoop):
-    def initialize(self, asyncio_loop, close_loop=False):
+    def initialize(self, asyncio_loop, close_loop=False, **kwargs):
+        super(BaseAsyncIOLoop, self).initialize(**kwargs)
         self.asyncio_loop = asyncio_loop
         self.close_loop = close_loop
-        self.asyncio_loop.call_soon(self.make_current)
         # Maps fd to (fileobj, handler function) pair (as in IOLoop.add_handler)
         self.handlers = {}
         # Set of fds listening for reads/writes
@@ -103,8 +114,16 @@ class BaseAsyncIOLoop(IOLoop):
         handler_func(fileobj, events)
 
     def start(self):
-        self._setup_logging()
-        self.asyncio_loop.run_forever()
+        old_current = IOLoop.current(instance=False)
+        try:
+            self._setup_logging()
+            self.make_current()
+            self.asyncio_loop.run_forever()
+        finally:
+            if old_current is None:
+                IOLoop.clear_current()
+            else:
+                old_current.make_current()
 
     def stop(self):
         self.asyncio_loop.stop()
@@ -131,12 +150,67 @@ class BaseAsyncIOLoop(IOLoop):
 
 
 class AsyncIOMainLoop(BaseAsyncIOLoop):
-    def initialize(self):
+    """``AsyncIOMainLoop`` creates an `.IOLoop` that corresponds to the
+    current ``asyncio`` event loop (i.e. the one returned by
+    ``asyncio.get_event_loop()``).  Recommended usage::
+
+        from tornado.platform.asyncio import AsyncIOMainLoop
+        import asyncio
+        AsyncIOMainLoop().install()
+        asyncio.get_event_loop().run_forever()
+    """
+    def initialize(self, **kwargs):
         super(AsyncIOMainLoop, self).initialize(asyncio.get_event_loop(),
-                                                close_loop=False)
+                                                close_loop=False, **kwargs)
 
 
 class AsyncIOLoop(BaseAsyncIOLoop):
-    def initialize(self):
-        super(AsyncIOLoop, self).initialize(asyncio.new_event_loop(),
-                                            close_loop=True)
+    """``AsyncIOLoop`` is an `.IOLoop` that runs on an ``asyncio`` event loop.
+    This class follows the usual Tornado semantics for creating new
+    ``IOLoops``; these loops are not necessarily related to the
+    ``asyncio`` default event loop.  Recommended usage::
+
+        from tornado.ioloop import IOLoop
+        IOLoop.configure('tornado.platform.asyncio.AsyncIOLoop')
+        IOLoop.current().start()
+
+    Each ``AsyncIOLoop`` creates a new ``asyncio.EventLoop``; this object
+    can be accessed with the ``asyncio_loop`` attribute.
+    """
+    def initialize(self, **kwargs):
+        loop = asyncio.new_event_loop()
+        try:
+            super(AsyncIOLoop, self).initialize(loop, close_loop=True, **kwargs)
+        except Exception:
+            # If initialize() does not succeed (taking ownership of the loop),
+            # we have to close it.
+            loop.close()
+            raise
+
+
+def to_tornado_future(asyncio_future):
+    """Convert an `asyncio.Future` to a `tornado.concurrent.Future`.
+
+    .. versionadded:: 4.1
+    """
+    tf = tornado.concurrent.Future()
+    tornado.concurrent.chain_future(asyncio_future, tf)
+    return tf
+
+
+def to_asyncio_future(tornado_future):
+    """Convert a Tornado yieldable object to an `asyncio.Future`.
+
+    .. versionadded:: 4.1
+
+    .. versionchanged:: 4.3
+       Now accepts any yieldable object, not just
+       `tornado.concurrent.Future`.
+    """
+    tornado_future = convert_yielded(tornado_future)
+    af = asyncio.Future()
+    tornado.concurrent.chain_future(tornado_future, af)
+    return af
+
+if hasattr(convert_yielded, 'register'):
+    convert_yielded.register(asyncio.Future, to_tornado_future)

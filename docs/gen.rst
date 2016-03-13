@@ -1,6 +1,11 @@
 ``tornado.gen`` --- Simplify asynchronous code
 ==============================================
 
+.. testsetup::
+
+   from tornado.web import *
+   from tornado import gen
+
 .. automodule:: tornado.gen
 
    Decorators
@@ -10,18 +15,52 @@
 
    .. autofunction:: engine
 
-   Yield points
-   ------------
+   Utility functions
+   -----------------
 
-   Instances of the following classes may be used in yield expressions
-   in the generator.  `Futures <.Future>` may be yielded as well;
-   their result method will be called automatically when they are
-   ready.  Additionally, lists of any combination of these objects may
-   be yielded; the result is a list of the results of each yield point
-   in the same order. Yielding dicts with these objects in values will
-   return dict with results at the same keys.
+   .. autoexception:: Return
+
+   .. autofunction:: with_timeout
+   .. autoexception:: TimeoutError
+
+   .. autofunction:: sleep
+
+   .. autodata:: moment
+      :annotation:
+
+   .. autoclass:: WaitIterator
+      :members:
+
+   .. autofunction:: multi
+
+   .. autofunction:: multi_future
 
    .. autofunction:: Task
+
+   .. class:: Arguments
+
+      The result of a `Task` or `Wait` whose callback had more than one
+      argument (or keyword arguments).
+
+      The `Arguments` object is a `collections.namedtuple` and can be
+      used either as a tuple ``(args, kwargs)`` or an object with attributes
+      ``args`` and ``kwargs``.
+
+   .. autofunction:: convert_yielded
+
+   .. autofunction:: maybe_future
+
+   Legacy interface
+   ----------------
+
+   Before support for `Futures <.Future>` was introduced in Tornado 3.0,
+   coroutines used subclasses of `YieldPoint` in their ``yield`` expressions.
+   These classes are still supported but should generally not be used
+   except for compatibility with older interfaces. None of these classes
+   are compatible with native (``await``-based) coroutines.
+
+   .. autoclass:: YieldPoint
+      :members:
 
    .. autoclass:: Callback
 
@@ -29,27 +68,4 @@
 
    .. autoclass:: WaitAll
 
-   .. autoclass:: YieldPoint
-      :members:
-
-   .. autofunction:: with_timeout
-   .. autoexception:: TimeoutError
-
-   .. autofunction:: maybe_future
-
-   .. autodata:: moment
-      :annotation:
-
-   Other classes
-   -------------
-
-   .. autoexception:: Return
-
-   .. class:: Arguments
-
-      The result of a yield expression whose callback had more than one
-      argument (or keyword arguments).
-
-      The `Arguments` object is a `collections.namedtuple` and can be
-      used either as a tuple ``(args, kwargs)`` or an object with attributes
-      ``args`` and ``kwargs``.
+   .. autoclass:: MultiYieldPoint

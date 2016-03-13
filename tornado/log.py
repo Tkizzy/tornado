@@ -179,21 +179,34 @@ class LogFormatter(logging.Formatter):
 def enable_pretty_logging(options=None, logger=None):
     """Turns on formatted logging output as configured.
 
-    This is called automaticaly by `tornado.options.parse_command_line`
+    This is called automatically by `tornado.options.parse_command_line`
     and `tornado.options.parse_config_file`.
     """
     if options is None:
-        from tornado.options import options
+        import tornado.options
+        options = tornado.options.options
     if options.logging is None or options.logging.lower() == 'none':
         return
     if logger is None:
         logger = logging.getLogger()
     logger.setLevel(getattr(logging, options.logging.upper()))
     if options.log_file_prefix:
-        channel = logging.handlers.RotatingFileHandler(
-            filename=options.log_file_prefix,
-            maxBytes=options.log_file_max_size,
-            backupCount=options.log_file_num_backups)
+        rotate_mode = options.log_rotate_mode
+        if rotate_mode == 'size':
+            channel = logging.handlers.RotatingFileHandler(
+                filename=options.log_file_prefix,
+                maxBytes=options.log_file_max_size,
+                backupCount=options.log_file_num_backups)
+        elif rotate_mode == 'time':
+            channel = logging.handlers.TimedRotatingFileHandler(
+                filename=options.log_file_prefix,
+                when=options.log_rotate_when,
+                interval=options.log_rotate_interval,
+                backupCount=options.log_file_num_backups)
+        else:
+            error_message = 'The value of log_rotate_mode option should be ' +\
+                            '"size" or "time", not "%s".' % rotate_mode
+            raise ValueError(error_message)
         channel.setFormatter(LogFormatter(color=False))
         logger.addHandler(channel)
 
@@ -206,9 +219,18 @@ def enable_pretty_logging(options=None, logger=None):
 
 
 def define_logging_options(options=None):
+    """Add logging-related flags to ``options``.
+
+    These options are present automatically on the default options instance;
+    this method is only necessary if you have created your own `.OptionParser`.
+
+    .. versionadded:: 4.2
+        This function existed in prior versions but was broken and undocumented until 4.2.
+    """
     if options is None:
         # late import to prevent cycle
-        from tornado.options import options
+        import tornado.options
+        options = tornado.options.options
     options.define("logging", default="info",
                    help=("Set the Python log level. If 'none', tornado won't touch the "
                          "logging configuration."),
@@ -227,4 +249,13 @@ def define_logging_options(options=None):
     options.define("log_file_num_backups", type=int, default=10,
                    help="number of log files to keep")
 
-    options.add_parse_callback(enable_pretty_logging)
+    options.define("log_rotate_when", type=str, default='midnight',
+                   help=("specify the type of TimedRotatingFileHandler interval "
+                         "other options:('S', 'M', 'H', 'D', 'W0'-'W6')"))
+    options.define("log_rotate_interval", type=int, default=1,
+                   help="The interval value of timed rotating")
+
+    options.define("log_rotate_mode", type=str, default='size',
+                   help="The mode of rotating files(time or size)")
+
+    options.add_parse_callback(lambda: enable_pretty_logging(options))

@@ -33,6 +33,9 @@ information, see
 http://curl.haxx.se/libcurl/c/curl_easy_setopt.html#CURLOPTCONNECTTIMEOUTMS
 and comments in curl_httpclient.py).
 
+To select ``curl_httpclient``, call `AsyncHTTPClient.configure` at startup::
+
+    AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
 """
 
 from __future__ import absolute_import, division, print_function, with_statement
@@ -60,11 +63,16 @@ class HTTPClient(object):
             response = http_client.fetch("http://www.google.com/")
             print response.body
         except httpclient.HTTPError as e:
-            print "Error:", e
+            # HTTPError is raised for non-200 responses; the response
+            # can be found in e.response.
+            print("Error: " + str(e))
+        except Exception as e:
+            # Other errors are possible, such as IOError.
+            print("Error: " + str(e))
         http_client.close()
     """
     def __init__(self, async_client_class=None, **kwargs):
-        self._io_loop = IOLoop()
+        self._io_loop = IOLoop(make_current=False)
         if async_client_class is None:
             async_client_class = AsyncHTTPClient
         self._async_client = async_client_class(self._io_loop, **kwargs)
@@ -87,11 +95,11 @@ class HTTPClient(object):
         If it is a string, we construct an `HTTPRequest` using any additional
         kwargs: ``HTTPRequest(request, **kwargs)``
 
-        If an error occurs during the fetch, we raise an `HTTPError`.
+        If an error occurs during the fetch, we raise an `HTTPError` unless
+        the ``raise_error`` keyword argument is set to False.
         """
         response = self._io_loop.run_sync(functools.partial(
             self._async_client.fetch, request, **kwargs))
-        response.rethrow()
         return response
 
 
@@ -128,6 +136,9 @@ class AsyncHTTPClient(Configurable):
         # or with force_instance:
         client = AsyncHTTPClient(force_instance=True,
             defaults=dict(user_agent="MyUserAgent"))
+
+    .. versionchanged:: 4.1
+       The ``io_loop`` argument is deprecated.
     """
     @classmethod
     def configurable_base(cls):
@@ -192,7 +203,7 @@ class AsyncHTTPClient(Configurable):
                 raise RuntimeError("inconsistent AsyncHTTPClient cache")
             del self._instance_cache[self.io_loop]
 
-    def fetch(self, request, callback=None, **kwargs):
+    def fetch(self, request, callback=None, raise_error=True, **kwargs):
         """Executes a request, asynchronously returning an `HTTPResponse`.
 
         The request may be either a string URL or an `HTTPRequest` object.
@@ -200,8 +211,12 @@ class AsyncHTTPClient(Configurable):
         kwargs: ``HTTPRequest(request, **kwargs)``
 
         This method returns a `.Future` whose result is an
-        `HTTPResponse`.  The ``Future`` will raise an `HTTPError` if
-        the request returned a non-200 response code.
+        `HTTPResponse`. By default, the ``Future`` will raise an
+        `HTTPError` if the request returned a non-200 response code
+        (other errors may also be raised if the server could not be
+        contacted). Instead, if ``raise_error`` is set to False, the
+        response will always be returned regardless of the response
+        code.
 
         If a ``callback`` is given, it will be invoked with the `HTTPResponse`.
         In the callback interface, `HTTPError` is not automatically raised.
@@ -212,6 +227,9 @@ class AsyncHTTPClient(Configurable):
             raise RuntimeError("fetch() called on closed AsyncHTTPClient")
         if not isinstance(request, HTTPRequest):
             request = HTTPRequest(url=request, **kwargs)
+        else:
+            if kwargs:
+                raise ValueError("kwargs can't be used if request is an HTTPRequest object")
         # We may modify this (to add Host, Accept-Encoding, etc),
         # so make sure we don't modify the caller's object.  This is also
         # where normal dicts get converted to HTTPHeaders objects.
@@ -235,7 +253,7 @@ class AsyncHTTPClient(Configurable):
             future.add_done_callback(handle_future)
 
         def handle_response(response):
-            if response.error:
+            if raise_error and response.error:
                 future.set_exception(response.error)
             else:
                 future.set_result(response)
@@ -279,7 +297,7 @@ class HTTPRequest(object):
         request_timeout=20.0,
         follow_redirects=True,
         max_redirects=5,
-        use_gzip=True,
+        decompress_response=True,
         proxy_password='',
         allow_nonstandard_methods=False,
         validate_cert=True)
@@ -296,7 +314,8 @@ class HTTPRequest(object):
                  validate_cert=None, ca_certs=None,
                  allow_ipv6=None,
                  client_key=None, client_cert=None, body_producer=None,
-                 expect_100_continue=False):
+                 expect_100_continue=False, decompress_response=None,
+                 ssl_options=None):
         r"""All parameters except ``url`` are optional.
 
         :arg string url: URL to fetch
@@ -330,7 +349,11 @@ class HTTPRequest(object):
            or return the 3xx response?
         :arg int max_redirects: Limit for ``follow_redirects``
         :arg string user_agent: String to send as ``User-Agent`` header
-        :arg bool use_gzip: Request gzip encoding from the server
+        :arg bool decompress_response: Request a compressed response from
+           the server and decompress it after downloading.  Default is True.
+           New in Tornado 4.0.
+        :arg bool use_gzip: Deprecated alias for ``decompress_response``
+           since Tornado 4.0.
         :arg string network_interface: Network interface to use for request.
            ``curl_httpclient`` only; see note below.
         :arg callable streaming_callback: If set, ``streaming_callback`` will
@@ -362,17 +385,19 @@ class HTTPRequest(object):
         :arg string ca_certs: filename of CA certificates in PEM format,
            or None to use defaults.  See note below when used with
            ``curl_httpclient``.
-        :arg bool allow_ipv6: Use IPv6 when available?  Default is false in
-           ``simple_httpclient`` and true in ``curl_httpclient``
         :arg string client_key: Filename for client SSL key, if any.  See
            note below when used with ``curl_httpclient``.
         :arg string client_cert: Filename for client SSL certificate, if any.
            See note below when used with ``curl_httpclient``.
+        :arg ssl.SSLContext ssl_options: `ssl.SSLContext` object for use in
+           ``simple_httpclient`` (unsupported by ``curl_httpclient``).
+           Overrides ``validate_cert``, ``ca_certs``, ``client_key``,
+           and ``client_cert``.
+        :arg bool allow_ipv6: Use IPv6 when available?  Default is true.
         :arg bool expect_100_continue: If true, send the
            ``Expect: 100-continue`` header and wait for a continue response
            before sending the request body.  Only supported with
            simple_httpclient.
-
 
         .. note::
 
@@ -391,6 +416,9 @@ class HTTPRequest(object):
 
         .. versionadded:: 4.0
            The ``body_producer`` and ``expect_100_continue`` arguments.
+
+        .. versionadded:: 4.2
+           The ``ssl_options`` argument.
         """
         # Note that some of these attributes go through property setters
         # defined below.
@@ -414,7 +442,10 @@ class HTTPRequest(object):
         self.follow_redirects = follow_redirects
         self.max_redirects = max_redirects
         self.user_agent = user_agent
-        self.use_gzip = use_gzip
+        if decompress_response is not None:
+            self.decompress_response = decompress_response
+        else:
+            self.decompress_response = use_gzip
         self.network_interface = network_interface
         self.streaming_callback = streaming_callback
         self.header_callback = header_callback
@@ -425,6 +456,7 @@ class HTTPRequest(object):
         self.allow_ipv6 = allow_ipv6
         self.client_key = client_key
         self.client_cert = client_cert
+        self.ssl_options = ssl_options
         self.expect_100_continue = expect_100_continue
         self.start_time = time.time()
 
@@ -576,9 +608,18 @@ class HTTPError(Exception):
     """
     def __init__(self, code, message=None, response=None):
         self.code = code
-        message = message or httputil.responses.get(code, "Unknown")
+        self.message = message or httputil.responses.get(code, "Unknown")
         self.response = response
-        Exception.__init__(self, "HTTP %d: %s" % (self.code, message))
+        super(HTTPError, self).__init__(code, message, response)
+
+    def __str__(self):
+        return "HTTP %d: %s" % (self.code, self.message)
+
+    # There is a cyclic reference between self and self.response,
+    # which breaks the default __repr__ implementation.
+    # (especially on pypy, which doesn't have the same recursion
+    # detection as cpython).
+    __repr__ = __str__
 
 
 class _RequestProxy(object):

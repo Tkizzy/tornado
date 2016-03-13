@@ -22,32 +22,22 @@ have crept in over time.
 
 from __future__ import absolute_import, division, print_function, with_statement
 
+import json
 import re
 import sys
 
-from tornado.util import bytes_type, unicode_type, basestring_type, u
+from tornado.util import PY3, unicode_type, basestring_type
 
-try:
-    from urllib.parse import parse_qs as _parse_qs  # py3
-except ImportError:
-    from urlparse import parse_qs as _parse_qs  # Python 2.6+
-
-try:
-    import htmlentitydefs  # py2
-except ImportError:
-    import html.entities as htmlentitydefs  # py3
-
-try:
-    import urllib.parse as urllib_parse  # py3
-except ImportError:
-    import urllib as urllib_parse  # py2
-
-import json
-
-try:
-    unichr
-except NameError:
+if PY3:
+    from urllib.parse import parse_qs as _parse_qs
+    import html.entities as htmlentitydefs
+    import urllib.parse as urllib_parse
     unichr = chr
+else:
+    from urlparse import parse_qs as _parse_qs
+    import htmlentitydefs
+    import urllib as urllib_parse
+
 
 _XHTML_ESCAPE_RE = re.compile('[&<>"\']')
 _XHTML_ESCAPE_DICT = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
@@ -82,7 +72,7 @@ def json_encode(value):
     # JSON permits but does not require forward slashes to be escaped.
     # This is useful when json data is emitted in a <script> tag
     # in HTML, as it prevents </script> tags from prematurely terminating
-    # the javscript.  Some json libraries do this escaping by default,
+    # the javascript.  Some json libraries do this escaping by default,
     # although python's standard library does not, so we do it here.
     # http://stackoverflow.com/questions/1580647/json-why-are-forward-slashes-escaped
     return json.dumps(value).replace("</", "<\\/")
@@ -116,7 +106,7 @@ def url_escape(value, plus=True):
 # python 3 changed things around enough that we need two separate
 # implementations of url_unescape.  We also need our own implementation
 # of parse_qs since python 3's version insists on decoding everything.
-if sys.version_info[0] < 3:
+if not PY3:
     def url_unescape(value, encoding='utf-8', plus=True):
         """Decodes the given value from a URL.
 
@@ -187,7 +177,7 @@ else:
         return encoded
 
 
-_UTF8_TYPES = (bytes_type, type(None))
+_UTF8_TYPES = (bytes, type(None))
 
 
 def utf8(value):
@@ -215,7 +205,7 @@ def to_unicode(value):
     """
     if isinstance(value, _TO_UNICODE_TYPES):
         return value
-    if not isinstance(value, bytes_type):
+    if not isinstance(value, bytes):
         raise TypeError(
             "Expected bytes, unicode, or None; got %r" % type(value)
         )
@@ -246,7 +236,7 @@ def to_basestring(value):
     """
     if isinstance(value, _BASESTRING_TYPES):
         return value
-    if not isinstance(value, bytes_type):
+    if not isinstance(value, bytes):
         raise TypeError(
             "Expected bytes, unicode, or None; got %r" % type(value)
         )
@@ -264,7 +254,7 @@ def recursive_unicode(obj):
         return list(recursive_unicode(i) for i in obj)
     elif isinstance(obj, tuple):
         return tuple(recursive_unicode(i) for i in obj)
-    elif isinstance(obj, bytes_type):
+    elif isinstance(obj, bytes):
         return to_unicode(obj)
     else:
         return obj
@@ -366,7 +356,7 @@ def linkify(text, shorten=False, extra_params="",
                     # have a status bar, such as Safari by default)
                     params += ' title="%s"' % href
 
-        return u('<a href="%s"%s>%s</a>') % (href, params, url)
+        return u'<a href="%s"%s>%s</a>' % (href, params, url)
 
     # First HTML-escape so that our strings are all safe.
     # The regex is modified to avoid character entites other than &amp; so
@@ -378,7 +368,10 @@ def linkify(text, shorten=False, extra_params="",
 def _convert_entity(m):
     if m.group(1) == "#":
         try:
-            return unichr(int(m.group(2)))
+            if m.group(2)[:1].lower() == 'x':
+                return unichr(int(m.group(2)[1:], 16))
+            else:
+                return unichr(int(m.group(2)))
         except ValueError:
             return "&#%s;" % m.group(2)
     try:

@@ -3,17 +3,18 @@
 from __future__ import absolute_import, division, print_function, with_statement
 
 from tornado import gen, ioloop
-from tornado.testing import AsyncTestCase, gen_test
-from tornado.test.util import unittest
-
+from tornado.log import app_log
+from tornado.testing import AsyncTestCase, gen_test, ExpectLog
+from tornado.test.util import unittest, skipBefore35, exec_test
 import contextlib
 import os
 import traceback
+import warnings
 
 
 @contextlib.contextmanager
 def set_environ(name, value):
-    old_value = os.environ.get('name')
+    old_value = os.environ.get(name)
     os.environ[name] = value
 
     try:
@@ -57,10 +58,21 @@ class AsyncTestCaseTest(AsyncTestCase):
         This test makes sure that a second call to wait()
         clears the first timeout.
         """
-        self.io_loop.add_timeout(self.io_loop.time() + 0.01, self.stop)
+        self.io_loop.add_timeout(self.io_loop.time() + 0.00, self.stop)
         self.wait(timeout=0.02)
         self.io_loop.add_timeout(self.io_loop.time() + 0.03, self.stop)
         self.wait(timeout=0.15)
+
+    def test_multiple_errors(self):
+        def fail(message):
+            raise Exception(message)
+        self.io_loop.add_callback(lambda: fail("error one"))
+        self.io_loop.add_callback(lambda: fail("error two"))
+        # The first error gets raised; the second gets logged.
+        with ExpectLog(app_log, "multiple unhandled exceptions"):
+            with self.assertRaises(Exception) as cm:
+                self.wait()
+        self.assertEqual(str(cm.exception), "error one")
 
 
 class AsyncTestCaseWrapperTest(unittest.TestCase):
@@ -71,6 +83,26 @@ class AsyncTestCaseWrapperTest(unittest.TestCase):
         test = Test('test_gen')
         result = unittest.TestResult()
         test.run(result)
+        self.assertEqual(len(result.errors), 1)
+        self.assertIn("should be decorated", result.errors[0][1])
+
+    @skipBefore35
+    def test_undecorated_coroutine(self):
+        namespace = exec_test(globals(), locals(), """
+        class Test(AsyncTestCase):
+            async def test_coro(self):
+                pass
+        """)
+
+        test_class = namespace['Test']
+        test = test_class('test_coro')
+        result = unittest.TestResult()
+
+        # Silence "RuntimeWarning: coroutine 'test_coro' was never awaited".
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            test.run(result)
+
         self.assertEqual(len(result.errors), 1)
         self.assertIn("should be decorated", result.errors[0][1])
 
@@ -215,6 +247,32 @@ class GenTest(AsyncTestCase):
 
         test_with_kwargs(self, test='test')
         self.finished = True
+
+    @skipBefore35
+    def test_native_coroutine(self):
+        namespace = exec_test(globals(), locals(), """
+        @gen_test
+        async def test(self):
+            self.finished = True
+        """)
+
+        namespace['test'](self)
+
+    @skipBefore35
+    def test_native_coroutine_timeout(self):
+        # Set a short timeout and exceed it.
+        namespace = exec_test(globals(), locals(), """
+        @gen_test(timeout=0.1)
+        async def test(self):
+            await gen.sleep(1)
+        """)
+
+        try:
+            namespace['test'](self)
+            self.fail("did not get expected exception")
+        except ioloop.TimeoutError:
+            self.finished = True
+
 
 if __name__ == '__main__':
     unittest.main()

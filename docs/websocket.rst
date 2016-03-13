@@ -1,6 +1,10 @@
 ``tornado.websocket`` --- Bidirectional communication to the browser
 ====================================================================
 
+.. testsetup::
+
+   import tornado.websocket
+
 .. automodule:: tornado.websocket
 
    .. autoclass:: WebSocketHandler
@@ -23,6 +27,7 @@
    -------------
 
    .. automethod:: WebSocketHandler.check_origin
+   .. automethod:: WebSocketHandler.get_compression_options
    .. automethod:: WebSocketHandler.set_nodelay
 
    Other

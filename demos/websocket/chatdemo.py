@@ -44,7 +44,7 @@ class Application(tornado.web.Application):
             static_path=os.path.join(os.path.dirname(__file__), "static"),
             xsrf_cookies=True,
         )
-        tornado.web.Application.__init__(self, handlers, **settings)
+        super(Application, self).__init__(handlers, **settings)
 
 
 class MainHandler(tornado.web.RequestHandler):
@@ -55,6 +55,10 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
     waiters = set()
     cache = []
     cache_size = 200
+
+    def get_compression_options(self):
+        # Non-None enables compression with default options.
+        return {}
 
     def open(self):
         ChatSocketHandler.waiters.add(self)
@@ -95,7 +99,7 @@ def main():
     tornado.options.parse_command_line()
     app = Application()
     app.listen(options.port)
-    tornado.ioloop.IOLoop.instance().start()
+    tornado.ioloop.IOLoop.current().start()
 
 
 if __name__ == "__main__":

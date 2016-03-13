@@ -32,6 +32,7 @@ provides WSGI support in two ways:
 from __future__ import absolute_import, division, print_function, with_statement
 
 import sys
+from io import BytesIO
 import tornado
 
 from tornado.concurrent import Future
@@ -40,12 +41,8 @@ from tornado import httputil
 from tornado.log import access_log
 from tornado import web
 from tornado.escape import native_str
-from tornado.util import bytes_type, unicode_type
+from tornado.util import unicode_type
 
-try:
-    from io import BytesIO  # python 3
-except ImportError:
-    from cStringIO import StringIO as BytesIO  # python 2
 
 try:
     import urllib.parse as urllib_parse  # py3
@@ -58,7 +55,7 @@ except ImportError:
 # here to minimize the temptation to use them in non-wsgi contexts.
 if str is unicode_type:
     def to_wsgi_str(s):
-        assert isinstance(s, bytes_type)
+        assert isinstance(s, bytes)
         return s.decode('latin1')
 
     def from_wsgi_str(s):
@@ -66,7 +63,7 @@ if str is unicode_type:
         return s.encode('latin1')
 else:
     def to_wsgi_str(s):
-        assert isinstance(s, bytes_type)
+        assert isinstance(s, bytes)
         return s
 
     def from_wsgi_str(s):
@@ -210,7 +207,7 @@ class WSGIAdapter(object):
             body = environ["wsgi.input"].read(
                 int(headers["Content-Length"]))
         else:
-            body = ""
+            body = b""
         protocol = environ["wsgi.url_scheme"]
         remote_ip = environ.get("REMOTE_ADDR", "")
         if environ.get("HTTP_HOST"):
@@ -256,7 +253,7 @@ class WSGIContainer(object):
         container = tornado.wsgi.WSGIContainer(simple_app)
         http_server = tornado.httpserver.HTTPServer(container)
         http_server.listen(8888)
-        tornado.ioloop.IOLoop.instance().start()
+        tornado.ioloop.IOLoop.current().start()
 
     This class is intended to let other frameworks (Django, web.py, etc)
     run on the Tornado HTTP server and I/O loop.
@@ -287,7 +284,8 @@ class WSGIContainer(object):
         if not data:
             raise Exception("WSGI app did not call start_response")
 
-        status_code = int(data["status"].split()[0])
+        status_code, reason = data["status"].split(' ', 1)
+        status_code = int(status_code)
         headers = data["headers"]
         header_set = set(k.lower() for (k, v) in headers)
         body = escape.utf8(body)
@@ -299,13 +297,12 @@ class WSGIContainer(object):
         if "server" not in header_set:
             headers.append(("Server", "TornadoServer/%s" % tornado.version))
 
-        parts = [escape.utf8("HTTP/1.1 " + data["status"] + "\r\n")]
+        start_line = httputil.ResponseStartLine("HTTP/1.1", status_code, reason)
+        header_obj = httputil.HTTPHeaders()
         for key, value in headers:
-            parts.append(escape.utf8(key) + b": " + escape.utf8(value) + b"\r\n")
-        parts.append(b"\r\n")
-        parts.append(body)
-        request.write(b"".join(parts))
-        request.finish()
+            header_obj.add(key, value)
+        request.connection.write_headers(start_line, header_obj, chunk=body)
+        request.connection.finish()
         self._log(status_code, request)
 
     @staticmethod

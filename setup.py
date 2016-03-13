@@ -34,16 +34,7 @@ from distutils.core import Extension
 # to support installing without the extension on platforms where
 # no compiler is available.
 from distutils.command.build_ext import build_ext
-from distutils.errors import CCompilerError
-from distutils.errors import DistutilsPlatformError, DistutilsExecError
-if sys.platform == 'win32' and sys.version_info > (2, 6):
-    # 2.6's distutils.msvc9compiler can raise an IOError when failing to
-    # find the compiler
-    build_errors = (CCompilerError, DistutilsExecError,
-                    DistutilsPlatformError, IOError)
-else:
-    build_errors = (CCompilerError, DistutilsExecError, DistutilsPlatformError,
-                    SystemError)
+
 
 class custom_build_ext(build_ext):
     """Allow C extension building to fail.
@@ -69,9 +60,13 @@ Debian and Ubuntu users should issue the following command:
 
     $ sudo apt-get install build-essential python-dev
 
-RedHat, CentOS, and Fedora users should issue the following command:
+RedHat and CentOS users should issue the following command:
 
     $ sudo yum install gcc python-devel
+
+Fedora users should issue the following command:
+
+    $ sudo dnf install gcc python-devel
 
 If you are seeing this message on OSX please read the documentation
 here:
@@ -83,7 +78,7 @@ http://api.mongodb.org/python/current/installation.html#osx
     def run(self):
         try:
             build_ext.run(self)
-        except build_errors:
+        except Exception:
             e = sys.exc_info()[1]
             sys.stdout.write('%s\n' % str(e))
             warnings.warn(self.warning_message % ("Extension modules",
@@ -95,7 +90,7 @@ http://api.mongodb.org/python/current/installation.html#osx
         name = ext.name
         try:
             build_ext.build_extension(self, ext)
-        except build_errors:
+        except Exception:
             e = sys.exc_info()[1]
             sys.stdout.write('%s\n' % str(e))
             warnings.warn(self.warning_message % ("The %s extension "
@@ -108,13 +103,13 @@ http://api.mongodb.org/python/current/installation.html#osx
 
 kwargs = {}
 
-version = "4.0b1"
+version = "4.4.dev1"
 
 with open('README.rst') as f:
     kwargs['long_description'] = f.read()
 
 if (platform.python_implementation() == 'CPython' and
-    os.environ.get('TORNADO_EXTENSION') != '0'):
+        os.environ.get('TORNADO_EXTENSION') != '0'):
     # This extension builds and works on pypy as well, although pypy's jit
     # produces equivalent performance.
     kwargs['ext_modules'] = [
@@ -130,16 +125,27 @@ if (platform.python_implementation() == 'CPython' and
 
 if setuptools is not None:
     # If setuptools is not available, you're on your own for dependencies.
-    install_requires = ['certifi']
+    install_requires = []
+    if sys.version_info < (2, 7):
+        # Only needed indirectly, for singledispatch.
+        install_requires.append('ordereddict')
     if sys.version_info < (3, 2):
         install_requires.append('backports.ssl_match_hostname')
+    if sys.version_info < (3, 4):
+        install_requires.append('singledispatch')
+        # Certifi is also optional on 2.7.9+, although making our dependencies
+        # conditional on micro version numbers seems like a bad idea
+        # until we have more declarative metadata.
+        install_requires.append('certifi')
+    if sys.version_info < (3, 5):
+        install_requires.append('backports_abc>=0.4')
     kwargs['install_requires'] = install_requires
 
 setup(
     name="tornado",
     version=version,
-    packages = ["tornado", "tornado.test", "tornado.platform"],
-    package_data = {
+    packages=["tornado", "tornado.test", "tornado.platform"],
+    package_data={
         # data files need to be listed both here (which determines what gets
         # installed) and in MANIFEST.in (which determines what gets included
         # in the sdist tarball)
@@ -150,7 +156,11 @@ setup(
             "gettext_translations/fr_FR/LC_MESSAGES/tornado_test.po",
             "options_test.cfg",
             "static/robots.txt",
+            "static/sample.xml",
+            "static/sample.xml.gz",
+            "static/sample.xml.bz2",
             "static/dir/index.html",
+            "static_foo.txt",
             "templates/utf8.html",
             "test.crt",
             "test.key",
@@ -164,10 +174,8 @@ setup(
     classifiers=[
         'License :: OSI Approved :: Apache Software License',
         'Programming Language :: Python :: 2',
-        'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.2',
         'Programming Language :: Python :: 3.3',
         'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: Implementation :: CPython',

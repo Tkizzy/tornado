@@ -37,34 +37,17 @@ from tornado import httputil
 from tornado import iostream
 from tornado import netutil
 from tornado.tcpserver import TCPServer
+from tornado.util import Configurable
 
 
-class HTTPServer(TCPServer, httputil.HTTPServerConnectionDelegate):
+class HTTPServer(TCPServer, Configurable,
+                 httputil.HTTPServerConnectionDelegate):
     r"""A non-blocking, single-threaded HTTP server.
 
-    A server is defined by either a request callback that takes a
-    `.HTTPServerRequest` as an argument or a `.HTTPServerConnectionDelegate`
-    instance.
-
-    A simple example server that echoes back the URI you requested::
-
-        import tornado.httpserver
-        import tornado.ioloop
-
-        def handle_request(request):
-           message = "You requested %s\n" % request.uri
-           request.connection.write_headers(
-               httputil.ResponseStartLine('HTTP/1.1', 200, 'OK'),
-               {"Content-Length": str(len(message))})
-           request.connection.write(message)
-           request.connection.finish()
-
-        http_server = tornado.httpserver.HTTPServer(handle_request)
-        http_server.listen(8888)
-        tornado.ioloop.IOLoop.instance().start()
-
-    Applications should use the methods of `.HTTPConnection` to write
-    their response.
+    A server is defined by a subclass of `.HTTPServerConnectionDelegate`,
+    or, for backwards compatibility, a callback that takes an
+    `.HTTPServerRequest` as an argument. The delegate is usually a
+    `tornado.web.Application`.
 
     `HTTPServer` supports keep-alive connections by default
     (automatically for HTTP/1.1, or for HTTP/1.0 when the client
@@ -79,15 +62,15 @@ class HTTPServer(TCPServer, httputil.HTTPServerConnectionDelegate):
     if Tornado is run behind an SSL-decoding proxy that does not set one of
     the supported ``xheaders``.
 
-    To make this server serve SSL traffic, send the ``ssl_options`` dictionary
-    argument with the arguments required for the `ssl.wrap_socket` method,
-    including ``certfile`` and ``keyfile``.  (In Python 3.2+ you can pass
-    an `ssl.SSLContext` object instead of a dict)::
+    To make this server serve SSL traffic, send the ``ssl_options`` keyword
+    argument with an `ssl.SSLContext` object. For compatibility with older
+    versions of Python ``ssl_options`` may also be a dictionary of keyword
+    arguments for the `ssl.wrap_socket` method.::
 
-       HTTPServer(applicaton, ssl_options={
-           "certfile": os.path.join(data_dir, "mydomain.crt"),
-           "keyfile": os.path.join(data_dir, "mydomain.key"),
-       })
+       ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+       ssl_ctx.load_cert_chain(os.path.join(data_dir, "mydomain.crt"),
+                               os.path.join(data_dir, "mydomain.key"))
+       HTTPServer(applicaton, ssl_options=ssl_ctx)
 
     `HTTPServer` initialization follows one of three patterns (the
     initialization methods are defined on `tornado.tcpserver.TCPServer`):
@@ -96,7 +79,7 @@ class HTTPServer(TCPServer, httputil.HTTPServerConnectionDelegate):
 
             server = HTTPServer(app)
             server.listen(8888)
-            IOLoop.instance().start()
+            IOLoop.current().start()
 
        In many cases, `tornado.web.Application.listen` can be used to avoid
        the need to explicitly create the `HTTPServer`.
@@ -107,7 +90,7 @@ class HTTPServer(TCPServer, httputil.HTTPServerConnectionDelegate):
             server = HTTPServer(app)
             server.bind(8888)
             server.start(0)  # Forks multiple sub-processes
-            IOLoop.instance().start()
+            IOLoop.current().start()
 
        When using this interface, an `.IOLoop` must *not* be passed
        to the `HTTPServer` constructor.  `~.TCPServer.start` will always start
@@ -119,7 +102,7 @@ class HTTPServer(TCPServer, httputil.HTTPServerConnectionDelegate):
             tornado.process.fork_processes(0)
             server = HTTPServer(app)
             server.add_sockets(sockets)
-            IOLoop.instance().start()
+            IOLoop.current().start()
 
        The `~.TCPServer.add_sockets` interface is more complicated,
        but it can be used with `tornado.process.fork_processes` to
@@ -129,22 +112,39 @@ class HTTPServer(TCPServer, httputil.HTTPServerConnectionDelegate):
        way other than `tornado.netutil.bind_sockets`.
 
     .. versionchanged:: 4.0
-       Added ``gzip``, ``chunk_size``, ``max_header_size``,
+       Added ``decompress_request``, ``chunk_size``, ``max_header_size``,
        ``idle_connection_timeout``, ``body_timeout``, ``max_body_size``
        arguments.  Added support for `.HTTPServerConnectionDelegate`
        instances as ``request_callback``.
+
+    .. versionchanged:: 4.1
+       `.HTTPServerConnectionDelegate.start_request` is now called with
+       two arguments ``(server_conn, request_conn)`` (in accordance with the
+       documentation) instead of one ``(request_conn)``.
+
+    .. versionchanged:: 4.2
+       `HTTPServer` is now a subclass of `tornado.util.Configurable`.
     """
-    def __init__(self, request_callback, no_keep_alive=False, io_loop=None,
-                 xheaders=False, ssl_options=None, protocol=None, gzip=False,
-                 chunk_size=None, max_header_size=None,
-                 idle_connection_timeout=None, body_timeout=None,
-                 max_body_size=None, max_buffer_size=None):
+    def __init__(self, *args, **kwargs):
+        # Ignore args to __init__; real initialization belongs in
+        # initialize since we're Configurable. (there's something
+        # weird in initialization order between this class,
+        # Configurable, and TCPServer so we can't leave __init__ out
+        # completely)
+        pass
+
+    def initialize(self, request_callback, no_keep_alive=False, io_loop=None,
+                   xheaders=False, ssl_options=None, protocol=None,
+                   decompress_request=False,
+                   chunk_size=None, max_header_size=None,
+                   idle_connection_timeout=None, body_timeout=None,
+                   max_body_size=None, max_buffer_size=None):
         self.request_callback = request_callback
         self.no_keep_alive = no_keep_alive
         self.xheaders = xheaders
         self.protocol = protocol
         self.conn_params = HTTP1ConnectionParameters(
-            use_gzip=gzip,
+            decompress=decompress_request,
             chunk_size=chunk_size,
             max_header_size=max_header_size,
             header_timeout=idle_connection_timeout or 3600,
@@ -154,6 +154,14 @@ class HTTPServer(TCPServer, httputil.HTTPServerConnectionDelegate):
                            max_buffer_size=max_buffer_size,
                            read_chunk_size=chunk_size)
         self._connections = set()
+
+    @classmethod
+    def configurable_base(cls):
+        return HTTPServer
+
+    @classmethod
+    def configurable_default(cls):
+        return HTTPServer
 
     @gen.coroutine
     def close_all_connections(self):
@@ -171,7 +179,7 @@ class HTTPServer(TCPServer, httputil.HTTPServerConnectionDelegate):
         conn.start_serving(self)
 
     def start_request(self, server_conn, request_conn):
-        return _ServerRequestAdapter(self, request_conn)
+        return _ServerRequestAdapter(self, server_conn, request_conn)
 
     def on_close(self, server_conn):
         self._connections.remove(server_conn)
@@ -180,7 +188,6 @@ class HTTPServer(TCPServer, httputil.HTTPServerConnectionDelegate):
 class _HTTPRequestContext(object):
     def __init__(self, stream, address, protocol):
         self.address = address
-        self.protocol = protocol
         # Save the socket's address family now so we know how to
         # interpret self.address even after the stream is closed
         # and its socket attribute replaced with None.
@@ -244,13 +251,14 @@ class _ServerRequestAdapter(httputil.HTTPMessageDelegate):
     """Adapts the `HTTPMessageDelegate` interface to the interface expected
     by our clients.
     """
-    def __init__(self, server, connection):
+    def __init__(self, server, server_conn, request_conn):
         self.server = server
-        self.connection = connection
+        self.connection = request_conn
         self.request = None
         if isinstance(server.request_callback,
                       httputil.HTTPServerConnectionDelegate):
-            self.delegate = server.request_callback.start_request(connection)
+            self.delegate = server.request_callback.start_request(
+                server_conn, request_conn)
             self._chunks = None
         else:
             self.delegate = None

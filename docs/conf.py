@@ -1,19 +1,21 @@
 # Ensure we get the local copy of tornado instead of what's on the standard path
 import os
 import sys
+import time
 sys.path.insert(0, os.path.abspath(".."))
 import tornado
 
 master_doc = "index"
 
 project = "Tornado"
-copyright = "2011, Facebook"
+copyright = "2009-%s, The Tornado Authors" % time.strftime("%Y")
 
 version = release = tornado.version
 
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.coverage",
+    "sphinx.ext.doctest",
     "sphinx.ext.extlinks",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
@@ -42,7 +44,6 @@ coverage_ignore_classes = [
     "TracebackFuture",
 
     # tornado.gen
-    "Multi",
     "Runner",
 
     # tornado.ioloop
@@ -70,41 +71,12 @@ coverage_ignore_functions = [
     # parse_qs_bytes should probably be documented but it's complicated by
     # having different implementations between py2 and py3.
     "parse_qs_bytes",
-
-    # tornado.gen
-    "multi_future",
 ]
 
-html_static_path = ['tornado.css']
-html_theme = 'default'
-html_style = "tornado.css"
-highlight_language = "none"
-html_theme_options = dict(
-    footerbgcolor="#fff",
-    footertextcolor="#000",
-    sidebarbgcolor="#fff",
-    #sidebarbtncolor
-    sidebartextcolor="#4d8cbf",
-    sidebarlinkcolor="#216093",
-    relbarbgcolor="#fff",
-    relbartextcolor="#000",
-    relbarlinkcolor="#216093",
-    bgcolor="#fff",
-    textcolor="#000",
-    linkcolor="#216093",
-    visitedlinkcolor="#216093",
-    headbgcolor="#fff",
-    headtextcolor="#4d8cbf",
-    codebgcolor="#fff",
-    codetextcolor="#060",
-    bodyfont="Georgia, serif",
-    headfont="Calibri, sans-serif",
-    stickysidebar=True,
-    )
 html_favicon = 'favicon.ico'
 
 latex_documents = [
-    ('documentation', 'tornado.tex', 'Tornado Documentation', 'Facebook', 'manual', False),
+    ('index', 'tornado.tex', 'Tornado Documentation', 'The Tornado Authors', 'manual', False),
     ]
 
 # HACK: sphinx has limited support for substitutions with the |version|
@@ -116,10 +88,20 @@ latex_documents = [
 # this link must be referenced as :current_tarball:`z`
 extlinks = {
     'current_tarball': (
-'https://pypi.python.org/packages/source/t/tornado/tornado-%s.tar.g%%s' % version,
+        'https://pypi.python.org/packages/source/t/tornado/tornado-%s.tar.g%%s' % version,
         'tornado-%s.tar.g' % version),
     }
 
 intersphinx_mapping = {
-    'python': ('http://python.readthedocs.org/en/latest/', None),
+    'python': ('https://docs.python.org/3.4/', None),
     }
+
+on_rtd = os.environ.get('READTHEDOCS', None) == 'True'
+
+# On RTD we can't import sphinx_rtd_theme, but it will be applied by
+# default anyway.  This block will use the same theme when building locally
+# as on RTD.
+if not on_rtd:
+    import sphinx_rtd_theme
+    html_theme = 'sphinx_rtd_theme'
+    html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]

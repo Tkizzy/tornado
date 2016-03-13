@@ -1,6 +1,10 @@
 ``tornado.auth`` --- Third-party login with OpenID and OAuth
 ============================================================
 
+.. testsetup::
+
+   import tornado.auth, tornado.gen, tornado.web
+
 .. automodule:: tornado.auth
 
    Common protocols
@@ -29,9 +33,6 @@
    Google
    ------
 
-   .. autoclass:: GoogleMixin
-      :members:
-   
    .. autoclass:: GoogleOAuth2Mixin
       :members:
 
@@ -41,18 +42,8 @@
    .. autoclass:: FacebookGraphMixin
       :members:
 
-   .. autoclass:: FacebookMixin
-      :members:
-
    Twitter
    -------
 
    .. autoclass:: TwitterMixin
       :members:
-
-   FriendFeed
-   ----------
-
-   .. autoclass:: FriendFeedMixin
-      :members:
-

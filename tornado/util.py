@@ -13,16 +13,33 @@ and `.Resolver`.
 from __future__ import absolute_import, division, print_function, with_statement
 
 import array
-import inspect
 import os
+import re
 import sys
 import zlib
 
+PY3 = sys.version_info >= (3,)
 
-try:
-    xrange  # py2
-except NameError:
-    xrange = range  # py3
+if PY3:
+    xrange = range
+
+# inspect.getargspec() raises DeprecationWarnings in Python 3.5.
+# The two functions have compatible interfaces for the parts we need.
+if PY3:
+    from inspect import getfullargspec as getargspec
+else:
+    from inspect import getargspec
+
+# Aliases for types that are spelled differently in different Python
+# versions. bytes_type is deprecated and no longer used in Tornado
+# itself but is left in case anyone outside Tornado is using it.
+unicode_type = type(u'')
+bytes_type = bytes
+if PY3:
+    basestring_type = str
+else:
+    # The name basestring doesn't exist in py3 so silence flake8.
+    basestring_type = basestring  # noqa
 
 
 class ObjectDict(dict):
@@ -96,6 +113,9 @@ def import_object(name):
         ...
     ImportError: No module named missing_module
     """
+    if isinstance(name, unicode_type) and str is not unicode_type:
+        # On python 2 a byte string is required.
+        name = name.encode('utf-8')
     if name.count('.') == 0:
         return __import__(name, None, None)
 
@@ -107,26 +127,16 @@ def import_object(name):
         raise ImportError("No module named %s" % parts[-1])
 
 
-# Fake unicode literal support:  Python 3.2 doesn't have the u'' marker for
-# literal strings, and alternative solutions like "from __future__ import
-# unicode_literals" have other problems (see PEP 414).  u() can be applied
-# to ascii strings that include \u escapes (but they must not contain
-# literal non-ascii characters).
-if type('') is not type(b''):
-    def u(s):
-        return s
-    bytes_type = bytes
-    unicode_type = str
-    basestring_type = str
-else:
-    def u(s):
-        return s.decode('unicode_escape')
-    bytes_type = str
-    unicode_type = unicode
-    basestring_type = basestring
+# Stubs to make mypy happy (and later for actual type-checking).
+def raise_exc_info(exc_info):
+    pass
 
 
-if sys.version_info > (3,):
+def exec_in(code, glob, loc=None):
+    pass
+
+
+if PY3:
     exec("""
 def raise_exc_info(exc_info):
     raise exc_info[1].with_traceback(exc_info[2])
@@ -154,7 +164,7 @@ def errno_from_exception(e):
     """Provides the errno from an Exception object.
 
     There are cases that the errno attribute was not set so we pull
-    the errno out of the args but if someone instatiates an Exception
+    the errno out of the args but if someone instantiates an Exception
     without any args you will get a tuple error. So this function
     abstracts all that behavior to give you a safe way to get the
     errno.
@@ -166,6 +176,31 @@ def errno_from_exception(e):
         return e.args[0]
     else:
         return None
+
+
+_alphanum = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+
+def _re_unescape_replacement(match):
+    group = match.group(1)
+    if group[0] in _alphanum:
+        raise ValueError("cannot unescape '\\\\%s'" % group[0])
+    return group
+
+_re_unescape_pattern = re.compile(r'\\(.)', re.DOTALL)
+
+
+def re_unescape(s):
+    """Unescape a string escaped by `re.escape`.
+
+    May raise ``ValueError`` for regular expressions which could not
+    have been produced by `re.escape` (for example, strings containing
+    ``\d`` cannot be unescaped).
+
+    .. versionadded:: 4.4
+    """
+    return _re_unescape_pattern.sub(_re_unescape_replacement, s)
 
 
 class Configurable(object):
@@ -188,24 +223,24 @@ class Configurable(object):
     `configurable_base` and `configurable_default`, and use the instance
     method `initialize` instead of ``__init__``.
     """
-    __impl_class = None
-    __impl_kwargs = None
+    __impl_class = None  # type: type
+    __impl_kwargs = None  # type: dict
 
-    def __new__(cls, **kwargs):
+    def __new__(cls, *args, **kwargs):
         base = cls.configurable_base()
-        args = {}
+        init_kwargs = {}
         if cls is base:
             impl = cls.configured_class()
             if base.__impl_kwargs:
-                args.update(base.__impl_kwargs)
+                init_kwargs.update(base.__impl_kwargs)
         else:
             impl = cls
-        args.update(kwargs)
+        init_kwargs.update(kwargs)
         instance = super(Configurable, cls).__new__(impl)
-        # initialize vs __init__ chosen for compatiblity with AsyncHTTPClient
+        # initialize vs __init__ chosen for compatibility with AsyncHTTPClient
         # singleton magic.  If we get rid of that we can switch to __init__
         # here too.
-        instance.initialize(**args)
+        instance.initialize(*args, **init_kwargs)
         return instance
 
     @classmethod
@@ -226,6 +261,9 @@ class Configurable(object):
         """Initialize a `Configurable` subclass instance.
 
         Configurable classes should use `initialize` instead of ``__init__``.
+
+        .. versionchanged:: 4.2
+           Now accepts positional arguments in addition to keyword arguments.
         """
 
     @classmethod
@@ -237,7 +275,7 @@ class Configurable(object):
         some parameters.
         """
         base = cls.configurable_base()
-        if isinstance(impl, (unicode_type, bytes_type)):
+        if isinstance(impl, (unicode_type, bytes)):
             impl = import_object(impl)
         if impl is not None and not issubclass(impl, cls):
             raise ValueError("Invalid subclass of %s" % cls)
@@ -274,10 +312,25 @@ class ArgReplacer(object):
     def __init__(self, func, name):
         self.name = name
         try:
-            self.arg_pos = inspect.getargspec(func).args.index(self.name)
+            self.arg_pos = self._getargnames(func).index(name)
         except ValueError:
             # Not a positional parameter
             self.arg_pos = None
+
+    def _getargnames(self, func):
+        try:
+            return getargspec(func).args
+        except TypeError:
+            if hasattr(func, 'func_code'):
+                # Cython-generated code has all the attributes needed
+                # by inspect.getargspec, but the inspect module only
+                # works with ordinary functions. Inline the portion of
+                # getargspec that we need here. Note that for static
+                # functions the @cython.binding(True) decorator must
+                # be used (for methods it works out of the box).
+                code = func.func_code
+                return code.co_varnames[:code.co_argcount]
+            raise
 
     def get_old_value(self, args, kwargs, default=None):
         """Returns the old value of the named argument without replacing it.
@@ -338,7 +391,7 @@ def _websocket_mask_python(mask, data):
         return unmasked.tostring()
 
 if (os.environ.get('TORNADO_NO_EXTENSION') or
-    os.environ.get('TORNADO_EXTENSION') == '0'):
+        os.environ.get('TORNADO_EXTENSION') == '0'):
     # These environment variables exist to make it easier to do performance
     # comparisons; they are not guaranteed to remain supported in the future.
     _websocket_mask = _websocket_mask_python

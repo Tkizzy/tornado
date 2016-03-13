@@ -2,19 +2,20 @@
 
 
 from __future__ import absolute_import, division, print_function, with_statement
-from tornado.httputil import url_concat, parse_multipart_form_data, HTTPHeaders, format_timestamp
-from tornado.escape import utf8
+from tornado.httputil import url_concat, parse_multipart_form_data, HTTPHeaders, format_timestamp, HTTPServerRequest, parse_request_start_line
+from tornado.escape import utf8, native_str
 from tornado.log import gen_log
 from tornado.testing import ExpectLog
 from tornado.test.util import unittest
 
+import copy
 import datetime
 import logging
+import pickle
 import time
 
 
 class TestUrlConcat(unittest.TestCase):
-
     def test_url_concat_no_query_params(self):
         url = url_concat(
             "https://localhost/path",
@@ -228,6 +229,95 @@ Foo: even
                           ("Foo", "bar baz"),
                           ("Foo", "even more lines")])
 
+    def test_unicode_newlines(self):
+        # Ensure that only \r\n is recognized as a header separator, and not
+        # the other newline-like unicode characters.
+        # Characters that are likely to be problematic can be found in
+        # http://unicode.org/standard/reports/tr13/tr13-5.html
+        # and cpython's unicodeobject.c (which defines the implementation
+        # of unicode_type.splitlines(), and uses a different list than TR13).
+        newlines = [
+            u'\u001b',  # VERTICAL TAB
+            u'\u001c',  # FILE SEPARATOR
+            u'\u001d',  # GROUP SEPARATOR
+            u'\u001e',  # RECORD SEPARATOR
+            u'\u0085',  # NEXT LINE
+            u'\u2028',  # LINE SEPARATOR
+            u'\u2029',  # PARAGRAPH SEPARATOR
+        ]
+        for newline in newlines:
+            # Try the utf8 and latin1 representations of each newline
+            for encoding in ['utf8', 'latin1']:
+                try:
+                    try:
+                        encoded = newline.encode(encoding)
+                    except UnicodeEncodeError:
+                        # Some chars cannot be represented in latin1
+                        continue
+                    data = b'Cookie: foo=' + encoded + b'bar'
+                    # parse() wants a native_str, so decode through latin1
+                    # in the same way the real parser does.
+                    headers = HTTPHeaders.parse(
+                        native_str(data.decode('latin1')))
+                    expected = [('Cookie', 'foo=' +
+                                 native_str(encoded.decode('latin1')) + 'bar')]
+                    self.assertEqual(
+                        expected, list(headers.get_all()))
+                except Exception:
+                    gen_log.warning("failed while trying %r in %s",
+                                    newline, encoding)
+                    raise
+
+    def test_optional_cr(self):
+        # Both CRLF and LF should be accepted as separators. CR should not be
+        # part of the data when followed by LF, but it is a normal char
+        # otherwise (or should bare CR be an error?)
+        headers = HTTPHeaders.parse(
+            'CRLF: crlf\r\nLF: lf\nCR: cr\rMore: more\r\n')
+        self.assertEqual(sorted(headers.get_all()),
+                         [('Cr', 'cr\rMore: more'),
+                          ('Crlf', 'crlf'),
+                          ('Lf', 'lf'),
+                          ])
+
+    def test_copy(self):
+        all_pairs = [('A', '1'), ('A', '2'), ('B', 'c')]
+        h1 = HTTPHeaders()
+        for k, v in all_pairs:
+            h1.add(k, v)
+        h2 = h1.copy()
+        h3 = copy.copy(h1)
+        h4 = copy.deepcopy(h1)
+        for headers in [h1, h2, h3, h4]:
+            # All the copies are identical, no matter how they were
+            # constructed.
+            self.assertEqual(list(sorted(headers.get_all())), all_pairs)
+        for headers in [h2, h3, h4]:
+            # Neither the dict or its member lists are reused.
+            self.assertIsNot(headers, h1)
+            self.assertIsNot(headers.get_list('A'), h1.get_list('A'))
+
+    def test_pickle_roundtrip(self):
+        headers = HTTPHeaders()
+        headers.add('Set-Cookie', 'a=b')
+        headers.add('Set-Cookie', 'c=d')
+        headers.add('Content-Type', 'text/html')
+        pickled = pickle.dumps(headers)
+        unpickled = pickle.loads(pickled)
+        self.assertEqual(sorted(headers.get_all()), sorted(unpickled.get_all()))
+        self.assertEqual(sorted(headers.items()), sorted(unpickled.items()))
+
+    def test_setdefault(self):
+        headers = HTTPHeaders()
+        headers['foo'] = 'bar'
+        # If a value is present, setdefault returns it without changes.
+        self.assertEqual(headers.setdefault('foo', 'baz'), 'bar')
+        self.assertEqual(headers['foo'], 'bar')
+        # If a value is not present, setdefault sets it for future use.
+        self.assertEqual(headers.setdefault('quux', 'xyzzy'), 'xyzzy')
+        self.assertEqual(headers['quux'], 'xyzzy')
+        self.assertEqual(sorted(headers.get_all()), [('Foo', 'bar'), ('Quux', 'xyzzy')])
+
 
 class FormatTimestampTest(unittest.TestCase):
     # Make sure that all the input types are supported.
@@ -253,3 +343,30 @@ class FormatTimestampTest(unittest.TestCase):
 
     def test_datetime(self):
         self.check(datetime.datetime.utcfromtimestamp(self.TIMESTAMP))
+
+
+# HTTPServerRequest is mainly tested incidentally to the server itself,
+# but this tests the parts of the class that can be tested in isolation.
+class HTTPServerRequestTest(unittest.TestCase):
+    def test_default_constructor(self):
+        # All parameters are formally optional, but uri is required
+        # (and has been for some time).  This test ensures that no
+        # more required parameters slip in.
+        HTTPServerRequest(uri='/')
+
+    def test_body_is_a_byte_string(self):
+        requets = HTTPServerRequest(uri='/')
+        self.assertIsInstance(requets.body, bytes)
+
+
+class ParseRequestStartLineTest(unittest.TestCase):
+    METHOD = "GET"
+    PATH = "/foo"
+    VERSION = "HTTP/1.1"
+
+    def test_parse_request_start_line(self):
+        start_line = " ".join([self.METHOD, self.PATH, self.VERSION])
+        parsed_start_line = parse_request_start_line(start_line)
+        self.assertEqual(parsed_start_line.method, self.METHOD)
+        self.assertEqual(parsed_start_line.path, self.PATH)
+        self.assertEqual(parsed_start_line.version, self.VERSION)

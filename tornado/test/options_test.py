@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from __future__ import absolute_import, division, print_function, with_statement
 
 import datetime
@@ -32,9 +33,11 @@ class OptionsTest(unittest.TestCase):
     def test_parse_config_file(self):
         options = OptionParser()
         options.define("port", default=80)
+        options.define("username", default='foo')
         options.parse_config_file(os.path.join(os.path.dirname(__file__),
                                                "options_test.cfg"))
         self.assertEquals(options.port, 443)
+        self.assertEqual(options.username, "李康")
 
     def test_parse_callbacks(self):
         options = OptionParser()
@@ -128,6 +131,12 @@ class OptionsTest(unittest.TestCase):
         options = self._sample_options()
         self.assertEqual(1, options['a'])
 
+    def test_setitem(self):
+        options = OptionParser()
+        options.define('foo', default=1, type=int)
+        options['foo'] = 2
+        self.assertEqual(options['foo'], 2)
+
     def test_items(self):
         options = self._sample_options()
         # OptionParsers always define 'help'.
@@ -218,3 +227,45 @@ class OptionsTest(unittest.TestCase):
             options.define('foo')
         self.assertRegexpMatches(str(cm.exception),
                                  'Option.*foo.*already defined')
+
+    def test_dash_underscore_cli(self):
+        # Dashes and underscores should be interchangeable.
+        for defined_name in ['foo-bar', 'foo_bar']:
+            for flag in ['--foo-bar=a', '--foo_bar=a']:
+                options = OptionParser()
+                options.define(defined_name)
+                options.parse_command_line(['main.py', flag])
+                # Attr-style access always uses underscores.
+                self.assertEqual(options.foo_bar, 'a')
+                # Dict-style access allows both.
+                self.assertEqual(options['foo-bar'], 'a')
+                self.assertEqual(options['foo_bar'], 'a')
+
+    def test_dash_underscore_file(self):
+        # No matter how an option was defined, it can be set with underscores
+        # in a config file.
+        for defined_name in ['foo-bar', 'foo_bar']:
+            options = OptionParser()
+            options.define(defined_name)
+            options.parse_config_file(os.path.join(os.path.dirname(__file__),
+                                                   "options_test.cfg"))
+            self.assertEqual(options.foo_bar, 'a')
+
+    def test_dash_underscore_introspection(self):
+        # Original names are preserved in introspection APIs.
+        options = OptionParser()
+        options.define('with-dash', group='g')
+        options.define('with_underscore', group='g')
+        all_options = ['help', 'with-dash', 'with_underscore']
+        self.assertEqual(sorted(options), all_options)
+        self.assertEqual(sorted(k for (k, v) in options.items()), all_options)
+        self.assertEqual(sorted(options.as_dict().keys()), all_options)
+
+        self.assertEqual(sorted(options.group_dict('g')),
+                         ['with-dash', 'with_underscore'])
+
+        # --help shows CLI-style names with dashes.
+        buf = StringIO()
+        options.print_help(buf)
+        self.assertIn('--with-dash', buf.getvalue())
+        self.assertIn('--with-underscore', buf.getvalue())

@@ -15,17 +15,22 @@
 # under the License.
 
 import logging
-import tornado.auth
 import tornado.escape
 import tornado.ioloop
 import tornado.web
 import os.path
 import uuid
 
+from tornado.concurrent import Future
 from tornado import gen
 from tornado.options import define, options, parse_command_line
 
+<<<<<<< HEAD
 define("port", default=8080, help="run on the given port", type=int)
+=======
+define("port", default=8888, help="run on the given port", type=int)
+define("debug", default=False, help="run in debug mode")
+>>>>>>> tornadoweb/master
 
 
 class MessageBuffer(object):
@@ -34,7 +39,12 @@ class MessageBuffer(object):
         self.cache = []
         self.cache_size = 200
 
-    def wait_for_messages(self, callback, cursor=None):
+    def wait_for_messages(self, cursor=None):
+        # Construct a Future to return to our caller.  This allows
+        # wait_for_messages to be yielded from a coroutine even though
+        # it is not a coroutine itself.  We will set the result of the
+        # Future when results are available.
+        result_future = Future()
         if cursor:
             new_count = 0
             for msg in reversed(self.cache):
@@ -42,20 +52,20 @@ class MessageBuffer(object):
                     break
                 new_count += 1
             if new_count:
-                callback(self.cache[-new_count:])
-                return
-        self.waiters.add(callback)
+                result_future.set_result(self.cache[-new_count:])
+                return result_future
+        self.waiters.add(result_future)
+        return result_future
 
-    def cancel_wait(self, callback):
-        self.waiters.remove(callback)
+    def cancel_wait(self, future):
+        self.waiters.remove(future)
+        # Set an empty result to unblock any coroutines waiting.
+        future.set_result([])
 
     def new_messages(self, messages):
         logging.info("Sending new message to %r listeners", len(self.waiters))
-        for callback in self.waiters:
-            try:
-                callback(messages)
-            except:
-                logging.error("Error in waiter callback", exc_info=True)
+        for future in self.waiters:
+            future.set_result(messages)
         self.waiters = set()
         self.cache.extend(messages)
         if len(self.cache) > self.cache_size:
@@ -66,25 +76,15 @@ class MessageBuffer(object):
 global_message_buffer = MessageBuffer()
 
 
-class BaseHandler(tornado.web.RequestHandler):
-    def get_current_user(self):
-        user_json = self.get_secure_cookie("chatdemo_user")
-        if not user_json: return None
-        return tornado.escape.json_decode(user_json)
-
-
-class MainHandler(BaseHandler):
-    @tornado.web.authenticated
+class MainHandler(tornado.web.RequestHandler):
     def get(self):
         self.render("index.html", messages=global_message_buffer.cache)
 
 
-class MessageNewHandler(BaseHandler):
-    @tornado.web.authenticated
+class MessageNewHandler(tornado.web.RequestHandler):
     def post(self):
         message = {
             "id": str(uuid.uuid4()),
-            "from": self.current_user["first_name"],
             "body": self.get_argument("body"),
         }
         # to_basestring is necessary for Python 3's json encoder,
@@ -98,40 +98,20 @@ class MessageNewHandler(BaseHandler):
         global_message_buffer.new_messages([message])
 
 
-class MessageUpdatesHandler(BaseHandler):
-    @tornado.web.authenticated
-    @tornado.web.asynchronous
+class MessageUpdatesHandler(tornado.web.RequestHandler):
+    @gen.coroutine
     def post(self):
         cursor = self.get_argument("cursor", None)
-        global_message_buffer.wait_for_messages(self.on_new_messages,
-                                                cursor=cursor)
-
-    def on_new_messages(self, messages):
-        # Closed client connection
+        # Save the future returned by wait_for_messages so we can cancel
+        # it in wait_for_messages
+        self.future = global_message_buffer.wait_for_messages(cursor=cursor)
+        messages = yield self.future
         if self.request.connection.stream.closed():
             return
-        self.finish(dict(messages=messages))
+        self.write(dict(messages=messages))
 
     def on_connection_close(self):
-        global_message_buffer.cancel_wait(self.on_new_messages)
-
-
-class AuthLoginHandler(BaseHandler, tornado.auth.GoogleMixin):
-    @gen.coroutine
-    def get(self):
-        if self.get_argument("openid.mode", None):
-            user = yield self.get_authenticated_user()
-            self.set_secure_cookie("chatdemo_user",
-                                   tornado.escape.json_encode(user))
-            self.redirect("/")
-            return
-        self.authenticate_redirect(ax_attrs=["name"])
-
-
-class AuthLogoutHandler(BaseHandler):
-    def get(self):
-        self.clear_cookie("chatdemo_user")
-        self.write("You are now logged out")
+        global_message_buffer.cancel_wait(self.future)
 
 
 def main():
@@ -139,19 +119,17 @@ def main():
     app = tornado.web.Application(
         [
             (r"/", MainHandler),
-            (r"/auth/login", AuthLoginHandler),
-            (r"/auth/logout", AuthLogoutHandler),
             (r"/a/message/new", MessageNewHandler),
             (r"/a/message/updates", MessageUpdatesHandler),
             ],
         cookie_secret="__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__",
-        login_url="/auth/login",
         template_path=os.path.join(os.path.dirname(__file__), "templates"),
         static_path=os.path.join(os.path.dirname(__file__), "static"),
         xsrf_cookies=True,
+        debug=options.debug,
         )
     app.listen(options.port)
-    tornado.ioloop.IOLoop.instance().start()
+    tornado.ioloop.IOLoop.current().start()
 
 
 if __name__ == "__main__":
